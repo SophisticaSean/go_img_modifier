@@ -1,51 +1,96 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"image"
+	_ "image/jpeg"
+	"io/ioutil"
 	"os"
 	"strconv"
-	"sync"
 
 	"github.com/disintegration/imaging"
+	"github.com/lwalen/vips"
 )
 
-func process(img_path string, name string, blur_amount int, wg *sync.WaitGroup) {
-	img, _ := imaging.Open(img_path)
-	bigImg := img
-	max := img.Bounds().Max
-	var min image.Point
-	min.X = max.X / blur_amount
-	min.Y = max.Y / blur_amount
-
-	smallImg := imaging.Resize(img, min.X, min.Y, imaging.NearestNeighbor)
-	bigImg = imaging.Resize(smallImg, max.X, max.Y, imaging.NearestNeighbor)
-
-	file_name := name + strconv.Itoa(blur_amount) + ".png"
-	imaging.Save(bigImg, file_name)
-	wg.Done()
+var options = vips.Options{
+	Width:        100,
+	Height:       100,
+	Crop:         false,
+	Enlarge:      true,
+	Extend:       vips.EXTEND_WHITE,
+	Interpolator: vips.BICUBIC,
+	Gravity:      vips.CENTRE,
+	Quality:      100,
+	Format:       vips.PNG,
 }
 
-func multi_process(args []string) {
-	var wg sync.WaitGroup
-	img_path := args[1]
-	img_name := args[2]
-	blur_amount, _ := strconv.Atoi(args[3])
-	lock_img, _ := imaging.Open(args[4])
-	monitor_count, _ := strconv.Atoi(args[5])
-
-	for i := 2; i <= blur_amount; i++ {
-		wg.Add(1)
-		go process(img_path, img_name, i, &wg)
+func getImageDimension(imagePath string) (int, int) {
+	file, err := os.Open(imagePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 	}
-	wg.Wait()
 
-	final_file := img_name + strconv.Itoa(blur_amount) + ".png"
-	final_file_name := img_name + strconv.Itoa(blur_amount+1) + ".png"
-	img, _ := imaging.Open(final_file)
-	if monitor_count == 1 {
-		lockImg := imaging.OverlayCenter(img, lock_img, 1.0)
-		imaging.Save(lockImg, final_file_name)
-	} else if monitor_count == 3 {
+	image, _, err := image.Decode(file)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", imagePath, err)
+	}
+	bounds := image.Bounds()
+	return bounds.Max.X, bounds.Max.Y
+}
+
+func process(args []string) {
+	imgString := args[1]
+	destString := args[2]
+	factor, _ := strconv.Atoi(args[3])
+	lockImg, _ := imaging.Open(args[4])
+	monitorCount, _ := strconv.Atoi(args[5])
+
+	width, height := getImageDimension(imgString)
+	resizeWidth := width / factor
+	resizeHeight := height / factor
+	options.Width = resizeWidth
+	options.Height = resizeHeight
+
+	// resize down
+	orig, _ := os.Open(imgString)
+	inBuf, _ := ioutil.ReadAll(orig)
+	buf, err := vips.Resize(inBuf, options)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+
+	// resize back up
+	options.Width = width
+	options.Height = height
+	final, err := vips.Resize(buf, options)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	finalBuffer := bytes.NewBuffer(final)
+
+	img, _, err := image.Decode(finalBuffer)
+	if err != nil {
+		panic(err)
+	}
+
+	//dest, err := os.Create(destString)
+	//if err != nil {
+	//panic(err)
+	//}
+	//defer dest.Close()
+
+	//dest.Write(final)
+
+	//finalFile := img_name + strconv.Itoa(blurAmount) + ".png"
+	//img, _ := imaging.Open(finalFile)
+
+	if monitorCount == 1 {
+		lockImg := imaging.OverlayCenter(img, lockImg, 1.0)
+		imaging.Save(lockImg, destString)
+	} else if monitorCount == 3 {
 		var (
 			mon1         image.Point
 			mon2         image.Point
@@ -53,45 +98,23 @@ func multi_process(args []string) {
 			lockImgPoint image.Point
 		)
 
-		lockImgPoint.X = lock_img.Bounds().Max.X / 2
-		lockImgPoint.Y = lock_img.Bounds().Max.Y / 2
+		lockImgPoint.X = lockImg.Bounds().Max.X / 2
+		lockImgPoint.Y = lockImg.Bounds().Max.Y / 2
 
 		mon1.X = (1920 / 2) - lockImgPoint.X
 		mon1.Y = (1200 / 2) - lockImgPoint.Y
 		mon2.X = mon1.X + 1920
 		mon2.Y = mon1.Y
-		mon3.X = mon1.X
-		mon3.Y = mon1.Y + 1200
+		mon3.X = mon1.X + (1920 * 2)
+		mon3.Y = mon1.Y
 
-		finalImg := imaging.Overlay(img, lock_img, mon1, 1.0)
-		finalImg = imaging.Overlay(finalImg, lock_img, mon2, 1.0)
-		finalImg = imaging.Overlay(finalImg, lock_img, mon3, 1.0)
-		imaging.Save(finalImg, final_file_name)
+		finalImg := imaging.Overlay(img, lockImg, mon1, 1.0)
+		finalImg = imaging.Overlay(finalImg, lockImg, mon2, 1.0)
+		finalImg = imaging.Overlay(finalImg, lockImg, mon3, 1.0)
+		imaging.Save(finalImg, destString)
 	}
 }
 
 func main() {
-	multi_process(os.Args)
-	//img, _ := imaging.Open(os.Args[1])
-	//bigImg := img
-	//max := img.Bounds().Max
-	//var min image.Point
-	//var mid image.Point
-	//blur_amount, _ := strconv.Atoi(os.Args[3])
-	//min.X = max.X / blur_amount
-	//min.Y = max.Y / blur_amount
-	//mid.X = max.X / 2
-	//mid.Y = max.Y / 2
-
-	//if os.Args[4] == "blur" {
-	//bigImg = imaging.Blur(img, float64(blur_amount))
-	//} else {
-	//smallImg := imaging.Resize(img, min.X, min.Y, imaging.NearestNeighbor)
-	//bigImg = imaging.Resize(smallImg, max.X, max.Y, imaging.NearestNeighbor)
-	//}
-	//if len(os.Args) == 6 {
-	//lock, _ := imaging.Open(os.Args[5])
-	//bigImg = imaging.OverlayCenter(bigImg, lock, 1.0)
-	//}
-	//imaging.Save(bigImg, os.Args[2])
+	process(os.Args)
 }
